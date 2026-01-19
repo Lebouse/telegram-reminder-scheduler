@@ -1,0 +1,29 @@
+app = "my-telegram-scheduler"
+kill_signal = "SIGINT"
+kill_timeout = 5
+primary_region = "fra"
+
+[build]
+
+[mounts]
+source = "telegram_data"
+destination = "/data"
+
+[[services]]
+protocol = "tcp"
+internal_port = 8080
+processes = ["web"]
+
+[services.concurrency]
+type = "connections"
+hard_limit = 25
+soft_limit = 20
+
+[[services.ports]]
+port = 443
+handlers = ["http"]
+force_https = true
+
+[processes]
+web = "python web_api.py"
+bot = "python telegram_bot.py"
