@@ -1,4 +1,6 @@
 # telegram_bot.py
+# Полностью исправленная версия для v0.1.0-pre
+# Исправлены проблемы с путями к БД и обработкой ошибок
 
 import asyncio
 import signal
@@ -6,6 +8,8 @@ import sys
 import datetime
 import re
 import logging
+import os
+import sqlite3
 from typing import Optional
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember
@@ -17,7 +21,7 @@ from telegram.constants import ChatType
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import UTC
 
-from config import BOT_TOKEN, AUTHORIZED_USER_IDS, TIMEZONE
+from config import BOT_TOKEN, AUTHORIZED_USER_IDS, TIMEZONE, DATABASE_PATH
 from shared.database import (
     init_db, add_scheduled_message, get_all_active_messages,
     deactivate_message, cleanup_old_tasks
@@ -43,7 +47,7 @@ user_sessions = {}
 shutdown_event = asyncio.Event()
 
 # === Файлы для хранения данных ===
-TRUSTED_CHATS_FILE = "/data/trusted_chats.txt"
+TRUSTED_CHATS_FILE = os.path.join(os.path.dirname(__file__), "trusted_chats.txt")
 
 def load_trusted_chats():
     """Загружает список чатов, куда добавлен бот."""
@@ -55,6 +59,7 @@ def load_trusted_chats():
 
 def save_trusted_chats(chats):
     """Сохраняет список доверенных чатов."""
+    os.makedirs(os.path.dirname(TRUSTED_CHATS_FILE), exist_ok=True)
     with open(TRUSTED_CHATS_FILE, "w") as f:
         for chat_id in sorted(chats):
             f.write(f"{chat_id}\n")
@@ -360,8 +365,46 @@ def signal_handler():
     logger.info("Получен сигнал завершения. Ожидание завершения...")
     shutdown_event.set()
 
+async def pre_start_checks():
+    """Проверяет и создаёт необходимые директории перед запуском."""
+    # Создаём директорию для trusted_chats.txt
+    os.makedirs(os.path.dirname(TRUSTED_CHATS_FILE), exist_ok=True)
+    logger.info(f"✅ Директория для trusted_chats создана: {os.path.dirname(TRUSTED_CHATS_FILE)}")
+
+    # Создаём директорию для базы данных
+    db_dir = os.path.dirname(DATABASE_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+        logger.info(f"✅ Директория для БД создана: {db_dir}")
+        
+        # Проверяем права на запись
+        test_file = os.path.join(db_dir, "test_write.tmp")
+        try:
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            logger.info("✅ Права на запись в директорию БД проверены")
+        except Exception as e:
+            logger.error(f"❌ Ошибка записи в директорию БД: {e}")
+            raise
+
 async def main():
-    init_db()
+    # Проводим предварительные проверки
+    try:
+        await pre_start_checks()
+    except Exception as e:
+        logger.critical(f"❌ Критическая ошибка при проверке перед запуском: {e}")
+        sys.exit(1)
+
+    # Инициализируем БД
+    try:
+        init_db()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.critical(f"❌ Ошибка инициализации базы данных: {e}")
+        sys.exit(1)
+
+    # Очистка старых задач
     cleanup_old_tasks(max_age_days=30)
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -401,18 +444,28 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, signal_handler)
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        logger.info("✅ Бот успешно запущен!")
 
-    await shutdown_event.wait()
-
-    # Остановка
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-    scheduler.shutdown()
-    logger.info("Бот остановлен.")
+        await shutdown_event.wait()
+        logger.info("⏳ Ожидание завершения текущих задач...")
+        
+    finally:
+        # Корректное завершение
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        scheduler.shutdown()
+        logger.info("✅ Бот остановлен.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🚫 Завершено пользователем")
+    except Exception as e:
+        logger.critical(f"❌ Критическая ошибка: {e}", exc_info=True)
+        sys.exit(1)
