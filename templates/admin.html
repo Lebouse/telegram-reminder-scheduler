@@ -162,6 +162,19 @@
             border-radius: 4px;
             margin-bottom: 15px;
         }
+        .create-btn {
+            display: inline-block;
+            margin: 10px 0;
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .create-btn:hover {
+            background: #45a049;
+        }
         @media (max-width: 768px) {
             .container { margin: 0; border-radius: 0; }
             th, td { padding: 8px 10px; }
@@ -201,3 +214,168 @@
                 ❌ Ошибка: {{ error }}
             </div>
         {% endif %}
+
+        <!-- Форма редактирования или создания -->
+        {% if edit_task or show_create_form %}
+        <div class="form-section">
+            <h2>{% if edit_task and edit_task.id %}Редактирование напоминания #{{ edit_task.id }}{% else %}Создать новое напоминание{% endif %}</h2>
+            <form method="post" action="{% if edit_task and edit_task.id %}/admin/edit/{{ edit_task.id }}{% else %}/admin/create{% endif %}">
+                <input type="hidden" name="secret" value="{{ current_secret }}">
+
+                <div class="form-group">
+                    <label>Чат ID:</label>
+                    <input type="text" name="chat_id" value="{{ edit_task.chat_id if edit_task else '' }}" required pattern="-100\d+">
+                    <small>Пример: -1001234567890</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Сообщение:</label>
+                    <textarea name="message_text" required>{{ edit_task.message_text if edit_task else '' }}</textarea>
+                    <small>Поддерживается форматирование: *жирный*, _курсив_, `код`. Можно использовать эмодзи 😊</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Media file_id (опционально):</label>
+                    <input type="text" name="media_file_id" value="{{ edit_task.media_file_id if edit_task else '' }}">
+                    <small>Отправьте фото/PDF боту → скопируйте file_id из ответа</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Дата и время первого напоминания (ваш часовой пояс: {{ timezone }}):</label>
+                    <input type="text" name="publish_at_local" value="{{ edit_task.publish_at_local if edit_task else '' }}" placeholder="25.01.2026 10:00" required>
+                    <small>Формат: ДД.ММ.ГГГГ ЧЧ:ММ</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Повторять напоминание:</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="recurrence" value="once" {% if edit_task and edit_task.recurrence == 'once' %}checked{% elif not edit_task %}checked{% endif %}> Один раз</label>
+                        <label><input type="radio" name="recurrence" value="daily" {% if edit_task and edit_task.recurrence == 'daily' %}checked{% endif %}> Ежедневно</label>
+                        <label><input type="radio" name="recurrence" value="weekly" {% if edit_task and edit_task.recurrence == 'weekly' %}checked{% endif %}> Еженедельно</label>
+                        <label><input type="radio" name="recurrence" value="monthly" {% if edit_task and edit_task.recurrence == 'monthly' %}checked{% endif %}> Ежемесячно</label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Удалить напоминание через:</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="delete_after_days" value="1" {% if edit_task and edit_task.delete_after_days == 1 %}checked{% endif %}> 1 день</label>
+                        <label><input type="radio" name="delete_after_days" value="2" {% if edit_task and edit_task.delete_after_days == 2 %}checked{% endif %}> 2 дня</label>
+                        <label><input type="radio" name="delete_after_days" value="3" {% if edit_task and edit_task.delete_after_days == 3 %}checked{% endif %}> 3 дня</label>
+                        <label><input type="radio" name="delete_after_days" value="" {% if not edit_task or not edit_task.delete_after_days %}checked{% endif %}> Никогда</label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="pin" {% if edit_task and edit_task.pin %}checked{% endif %}>
+                        Закрепить сообщение
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="notify" {% if not edit_task or edit_task.notify %}checked{% endif %}>
+                        Оповестить участников (отправить без уведомления)
+                    </label>
+                </div>
+
+                <button type="submit">Сохранить</button>
+                <a href="/admin?secret={{ current_secret }}" class="cancel-btn">Отмена</a>
+            </form>
+        </div>
+        {% endif %}
+
+        <!-- Кнопка создания напоминания (всегда видна, кроме форм) -->
+        {% if not (edit_task or show_create_form) %}
+            <div style="padding: 0 20px 20px;">
+                <a href="/admin?secret={{ current_secret }}&create=1" class="create-btn">➕ Создать напоминание</a>
+            </div>
+        {% endif %}
+
+        <!-- Список задач -->
+        <div style="padding: 0 20px 20px;">
+            <h2>Активные напоминания ({{ active_count }})</h2>
+
+            {% if tasks %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Чат</th>
+                        <th>Контент</th>
+                        <th>Публикация</th>
+                        <th>Повтор</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for task in tasks %}
+                    <tr>
+                        <td>{{ task.id }}</td>
+                        <td>{{ chat_titles.get(task.chat_id|string, task.chat_id) }}</td>
+                        <td>
+                            {% if task.photo_file_id %}
+                                <span class="media-indicator">🖼️ Фото</span>
+                            {% elif task.document_file_id %}
+                                <span class="media-indicator">📄 PDF</span>
+                            {% else %}
+                                {{ task.text | truncate(60) }}
+                            {% endif %}
+                        </td>
+                        <td>{{ task.publish_at[:16] }}</td>
+                        <td>
+                            {% if task.recurrence == 'once' %}Один раз
+                            {% elif task.recurrence == 'daily' %}Ежедневно
+                            {% elif task.recurrence == 'weekly' %}Еженедельно
+                            {% elif task.recurrence == 'monthly' %}Ежемесячно
+                            {% else %}{{ task.recurrence }}
+                            {% endif %}
+                        </td>
+                        <td class="actions">
+                            <form method="post" action="/admin/delete/{{ task.id }}" style="display:inline;" onsubmit="return confirm('Удалить напоминание?')">
+                                <input type="hidden" name="secret" value="{{ current_secret }}">
+                                <button type="submit" class="delete-btn">Удалить</button>
+                            </form>
+                            <a href="/admin/edit/{{ task.id }}?secret={{ current_secret }}"><button class="edit-btn">Редактировать</button></a>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+                <p>Нет активных напоминаний.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        // Автоматически добавляем секрет ко всем внутренним ссылкам
+        document.addEventListener('DOMContentLoaded', () => {
+            const secret = new URLSearchParams(window.location.search).get('secret');
+            if (!secret) return;
+            
+            // Добавляем секрет ко всем ссылкам
+            document.querySelectorAll('a[href]').forEach(a => {
+                const url = new URL(a.href, window.location.href);
+                if (url.origin === window.location.origin) {
+                    url.searchParams.set('secret', secret);
+                    a.href = url.toString();
+                }
+            });
+            
+            // Добавляем секрет ко всем формам
+            document.querySelectorAll('form').forEach(form => {
+                let secretInput = form.querySelector('input[name="secret"]');
+                if (!secretInput) {
+                    secretInput = document.createElement('input');
+                    secretInput.type = 'hidden';
+                    secretInput.name = 'secret';
+                    secretInput.value = secret;
+                    form.appendChild(secretInput);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
