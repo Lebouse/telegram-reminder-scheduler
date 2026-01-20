@@ -34,22 +34,6 @@
             padding: 20px;
             border-bottom: 1px solid #eee;
         }
-        .chat-filter {
-            margin-bottom: 15px;
-        }
-        .csv-link {
-            display: inline-block;
-            margin: 10px 0;
-            padding: 8px 16px;
-            background: #2196F3;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            font-weight: bold;
-        }
-        .csv-link:hover {
-            background: #1976D2;
-        }
         .form-section {
             background: #f9f9f9;
             padding: 20px;
@@ -66,9 +50,7 @@
             font-weight: bold;
         }
         input[type="text"],
-        input[type="number"],
-        textarea,
-        select {
+        textarea {
             width: 100%;
             padding: 8px 12px;
             border: 1px solid #ccc;
@@ -80,24 +62,6 @@
             min-height: 100px;
             resize: vertical;
         }
-        .checkbox-group,
-        .radio-group {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .checkbox-group label,
-        .radio-group label {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            font-weight: normal;
-            cursor: pointer;
-        }
-        .recurrence-options {
-            margin-top: 10px;
-            padding-left: 20px;
-        }
         button {
             background: #4CAF50;
             color: white;
@@ -108,76 +72,12 @@
             font-size: 14px;
             margin-right: 10px;
         }
-        button:hover {
-            background: #45a049;
-        }
-        .cancel-btn {
-            background: #9E9E9E;
-        }
-        .cancel-btn:hover {
-            background: #757575;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        th {
-            background: #f5f5f5;
-            font-weight: 600;
-        }
-        tr:hover {
-            background: #f9f9f9;
-        }
-        .actions button {
-            padding: 6px 12px;
-            font-size: 13px;
-            margin: 2px;
-        }
-        .delete-btn {
-            background: #f44336;
-        }
-        .delete-btn:hover {
-            background: #d32f2f;
-        }
-        .edit-btn {
-            background: #FF9800;
-        }
-        .edit-btn:hover {
-            background: #F57C00;
-        }
-        .media-indicator {
-            color: #666;
-            font-style: italic;
-        }
         .error {
             color: #f44336;
             background: #ffebee;
             padding: 10px;
             border-radius: 4px;
             margin-bottom: 15px;
-        }
-        .create-btn {
-            display: inline-block;
-            margin: 10px 0;
-            padding: 8px 16px;
-            background: #4CAF50;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            font-weight: bold;
-        }
-        .create-btn:hover {
-            background: #45a049;
-        }
-        @media (max-width: 768px) {
-            .container { margin: 0; border-radius: 0; }
-            th, td { padding: 8px 10px; }
         }
     </style>
 </head>
@@ -188,30 +88,7 @@
         </header>
 
         <div class="controls">
-            {% set export_url = "/admin/export.csv?secret=" + current_secret %}
-            <a href="{{ export_url }}" class="csv-link">📥 Экспорт в CSV</a>
-            
-            <div class="chat-filter">
-                <form method="get">
-                    <input type="hidden" name="secret" value="{{ current_secret }}">
-                    <label><strong>Фильтр по чату:</strong></label>
-                    <select name="chat_filter" onchange="this.form.submit()">
-                        <option value="">Все чаты ({{ active_count }})</option>
-                        {% for chat_id in unique_chats %}
-                            <option value="{{ chat_id }}" {% if chat_filter and chat_filter == chat_id|string %}selected{% endif %}>
-                                {{ chat_titles.get(chat_id|string, "Чат " + chat_id|string) }}
-                                {% set chat_tasks = [] %}
-                                {% for task in tasks %}
-                                    {% if task.chat_id == chat_id %}
-                                        {% set _ = chat_tasks.append(task) %}
-                                    {% endif %}
-                                {% endfor %}
-                                ({{ chat_tasks | length }})
-                            </option>
-                        {% endfor %}
-                    </select>
-                </form>
-            </div>
+            <!-- Нет экспорта и фильтров для упрощения -->
         </div>
 
         {% if error %}
@@ -220,188 +97,58 @@
             </div>
         {% endif %}
 
-        <!-- Форма редактирования или создания -->
-        {% if edit_task or show_create_form %}
+        <!-- УПРОЩЕННАЯ ФОРМА СОЗДАНИЯ ЗАДАЧИ -->
         <div class="form-section">
-            <h2>{% if edit_task and edit_task.id %}Редактирование напоминания #{{ edit_task.id }}{% else %}Создать новое напоминание{% endif %}</h2>
-            
-            {% if edit_task and edit_task.id %}
-                <form method="post" action="/admin/edit/{{ edit_task.id }}" enctype="application/x-www-form-urlencoded">
-            {% else %}
-                <form method="post" action="/admin/create" enctype="application/x-www-form-urlencoded">
-            {% endif %}
-            
+            <h2>➕ Тестовая форма создания задачи</h2>
+            <form method="POST" action="/admin/create">
                 <input type="hidden" name="secret" value="{{ current_secret }}">
 
                 <div class="form-group">
-                    <label>Чат ID:</label>
-                    <input type="text" name="chat_id" value="{{ edit_task.chat_id if edit_task else '' }}" required pattern="-100\d+" placeholder="-1001234567890">
-                    <small>Пример: -1001234567890</small>
+                    <label>Чат ID (обязательно):</label>
+                    <input type="text" name="chat_id" required placeholder="-1001234567890">
                 </div>
 
                 <div class="form-group">
-                    <label>Сообщение:</label>
-                    <textarea name="message_text" required placeholder="Введите текст сообщения...">{{ edit_task.message_text if edit_task else '' }}</textarea>
-                    <small>Поддерживается форматирование: *жирный*, _курсив_, `код`. Можно использовать эмодзи 😊</small>
+                    <label>Сообщение (обязательно):</label>
+                    <textarea name="message_text" required placeholder="Тестовое сообщение"></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label>Media file_id (опционально):</label>
-                    <input type="text" name="media_file_id" value="{{ edit_task.media_file_id if edit_task else '' }}" placeholder="file_id фото или документа">
-                    <small>Отправьте фото/PDF боту → скопируйте file_id из ответа</small>
+                    <label>Дата и время (обязательно):</label>
+                    <input type="text" name="publish_at_local" required placeholder="25.01.2026 10:00">
                 </div>
 
                 <div class="form-group">
-                    <label>Дата и время первого напоминания (ваш часовой пояс: {{ timezone }}):</label>
-                    <input type="text" name="publish_at_local" value="{{ edit_task.publish_at_local if edit_task else '' }}" placeholder="25.01.2026 10:00" required>
-                    <small>Формат: ДД.ММ.ГГГГ ЧЧ:ММ</small>
+                    <label>Повторять (обязательно):</label>
+                    <select name="recurrence" required>
+                        <option value="once">Один раз</option>
+                        <option value="daily">Ежедневно</option>
+                    </select>
                 </div>
 
-                <div class="form-group">
-                    <label>Повторять напоминание:</label>
-                    <div class="radio-group">
-                        <label><input type="radio" name="recurrence" value="once" {% if edit_task and edit_task.recurrence == 'once' %}checked{% elif not edit_task %}checked{% endif %} required> Один раз</label>
-                        <label><input type="radio" name="recurrence" value="daily" {% if edit_task and edit_task.recurrence == 'daily' %}checked{% endif %}> Ежедневно</label>
-                        <label><input type="radio" name="recurrence" value="weekly" {% if edit_task and edit_task.recurrence == 'weekly' %}checked{% endif %}> Еженедельно</label>
-                        <label><input type="radio" name="recurrence" value="monthly" {% if edit_task and edit_task.recurrence == 'monthly' %}checked{% endif %}> Ежемесячно</label>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Удалить напоминание через:</label>
-                    <div class="radio-group">
-                        <label><input type="radio" name="delete_after_days" value="1" {% if edit_task and edit_task.delete_after_days == 1 %}checked{% endif %}> 1 день</label>
-                        <label><input type="radio" name="delete_after_days" value="2" {% if edit_task and edit_task.delete_after_days == 2 %}checked{% endif %}> 2 дня</label>
-                        <label><input type="radio" name="delete_after_days" value="3" {% if edit_task and edit_task.delete_after_days == 3 %}checked{% endif %}> 3 дня</label>
-                        <label><input type="radio" name="delete_after_days" value="" {% if not edit_task or not edit_task.delete_after_days %}checked{% endif %}> Никогда</label>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" name="pin" {% if edit_task and edit_task.pin %}checked{% endif %}>
-                        Закрепить сообщение
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" name="notify" {% if not edit_task or edit_task.notify %}checked{% endif %}>
-                        Оповестить участников (отправить без уведомления)
-                    </label>
-                </div>
-
-                <button type="submit">Сохранить</button>
-                <a href="/admin?secret={{ current_secret }}" class="cancel-btn">Отмена</a>
+                <button type="submit">✅ Отправить тестовые данные</button>
+                <a href="/admin?secret={{ current_secret }}" style="background:#9E9E9E;padding:10px 15px;border-radius:4px;color:white;text-decoration:none;">Отмена</a>
             </form>
         </div>
-        {% endif %}
 
-        <!-- Кнопка создания напоминания (всегда видна, кроме форм) -->
-        {% if not (edit_task or show_create_form) %}
-            <div style="padding: 0 20px 20px;">
-                <a href="/admin?secret={{ current_secret }}&create=1" class="create-btn">➕ Создать напоминание</a>
-            </div>
-        {% endif %}
-
-        <!-- Список задач -->
         <div style="padding: 0 20px 20px;">
-            <h2>Активные напоминания ({{ active_count }})</h2>
-
-            {% if tasks %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Чат</th>
-                        <th>Контент</th>
-                        <th>Публикация</th>
-                        <th>Повтор</th>
-                        <th>Действия</th>
-                    </tr>
-                </thead>
-                <tbody>
-                {% for task in tasks %}
-                    <tr>
-                        <td>{{ task.id }}</td>
-                        <td>{{ chat_titles.get(task.chat_id|string, task.chat_id|string) }}</td>
-                        <td>
-                            {% if task.photo_file_id %}
-                                <span class="media-indicator">🖼️ Фото</span>
-                            {% elif task.document_file_id %}
-                                <span class="media-indicator">📄 PDF</span>
-                            {% else %}
-                                {{ task.text | truncate(60) }}
-                            {% endif %}
-                        </td>
-                        <td>{{ task.publish_at[:16] }}</td>
-                        <td>
-                            {% if task.recurrence == 'once' %}Один раз
-                            {% elif task.recurrence == 'daily' %}Ежедневно
-                            {% elif task.recurrence == 'weekly' %}Еженедельно
-                            {% elif task.recurrence == 'monthly' %}Ежемесячно
-                            {% else %}{{ task.recurrence }}
-                            {% endif %}
-                        </td>
-                        <td class="actions">
-                            <form method="post" action="/admin/delete/{{ task.id }}" style="display:inline;" enctype="application/x-www-form-urlencoded">
-                                <input type="hidden" name="secret" value="{{ current_secret }}">
-                                <button type="submit" class="delete-btn" onclick="return confirm('Удалить напоминание?')">Удалить</button>
-                            </form>
-                            <a href="/admin/edit/{{ task.id }}?secret={{ current_secret }}"><button class="edit-btn">Редактировать</button></a>
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-                <p>Нет активных напоминаний.</p>
-            {% endif %}
+            <p>💡 Эта упрощенная форма поможет определить проблему с отправкой данных.</p>
+            <p>Если это работает — проблема в основном шаблоне. Если нет — проблема на сервере.</p>
         </div>
     </div>
 
     <script>
-        // Автоматически добавляем секрет ко всем внутренним ссылкам
+        // Минимальный JavaScript только для секрета в ссылках
         document.addEventListener('DOMContentLoaded', () => {
             const secret = new URLSearchParams(window.location.search).get('secret');
             if (!secret) return;
             
-            // Добавляем секрет ко всем ссылкам
             document.querySelectorAll('a[href]').forEach(a => {
                 const url = new URL(a.href, window.location.origin);
                 if (url.origin === window.location.origin && !url.searchParams.has('secret')) {
                     url.searchParams.set('secret', secret);
                     a.href = url.toString();
                 }
-            });
-            
-            // Скрытое поле секрета для всех форм
-            document.querySelectorAll('form').forEach(form => {
-                if (!form.querySelector('input[name="secret"]')) {
-                    const secretInput = document.createElement('input');
-                    secretInput.type = 'hidden';
-                    secretInput.name = 'secret';
-                    secretInput.value = secret;
-                    form.appendChild(secretInput);
-                }
-            });
-        });
-        
-        // Функция для отладки отправки формы
-        function debugFormSubmit(event) {
-            const form = event.target;
-            const formData = new FormData(form);
-            console.log('Отправка формы:');
-            for (const [key, value] of formData.entries()) {
-                console.log(`${key}: ${value}`);
-            }
-            return true; // Разрешаем отправку
-        }
-        
-        // Добавляем обработчик для отладки
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('form').forEach(form => {
-                form.onsubmit = debugFormSubmit;
             });
         });
     </script>
