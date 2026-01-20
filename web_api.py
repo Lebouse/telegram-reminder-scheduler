@@ -1,5 +1,5 @@
 # web_api.py
-# ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ с исправлением всех проблем
+# ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ с исправлением проблемы с формами
 # Порт: 8081
 # Секрет админки: qwerty12345
 
@@ -143,6 +143,17 @@ class HealthCheckResponse(BaseModel):
     active_tasks: int
     timestamp: str
     database: str
+
+class CreateTaskRequest(BaseModel):
+    secret: Optional[str] = None
+    chat_id: str
+    message_text: str
+    media_file_id: Optional[str] = None
+    publish_at_local: str
+    recurrence: str
+    delete_after_days: Optional[str] = None
+    pin: Optional[str] = "off"
+    notify: Optional[str] = "on"
 
 # === Глобальный middleware для проверки секрета ===
 @app.middleware("http")
@@ -452,68 +463,75 @@ async def admin_panel(
         logger.exception(f"❌ Критическая ошибка в /admin: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+# === ИСПРАВЛЕННЫЙ ЭНДПОИНТ СОЗДАНИЯ ЗАДАЧИ ===
 @app.post("/admin/create", summary="Create new task")
 async def admin_create_task(
-    request: Request,
-    secret: Optional[str] = Form(None),
-    chat_id: str = Form(...),  # Используем str вместо int для надежности
-    message_text: str = Form(...),
-    media_file_id: Optional[str] = Form(None),
-    publish_at_local: str = Form(...),
-    recurrence: str = Form(...),
-    delete_after_days: Optional[str] = Form(None),  # str вместо int
-    pin: Optional[str] = Form("off"),  # checkbox возвращает "on" или отсутствует
-    notify: Optional[str] = Form("on")  # checkbox возвращает "on" или отсутствует
+    request: Request
 ):
     """Создаёт новую задачу из админки."""
     logger.info("✅ Начало создания задачи")
     
     try:
-        # Детальное логирование всех параметров
-        logger.debug(f"📝 Получены параметры формы:")
-        form_data = await request.form()
-        logger.debug(f"Полные данные формы: {dict(form_data)}")
+        # Получаем данные формы
+        form = await request.form()
         
-        logger.debug(f"chat_id (raw): '{chat_id}'")
-        logger.debug(f"message_text (raw): '{message_text}'")
-        logger.debug(f"publish_at_local (raw): '{publish_at_local}'")
-        logger.debug(f"recurrence (raw): '{recurrence}'")
-        logger.debug(f"pin (raw): '{pin}'")
-        logger.debug(f"notify (raw): '{notify}'")
+        # Логируем все поля формы для отладки
+        logger.debug(f"📝 Все поля формы: {dict(form)}")
         
-        # 1. Валидация и конвертация chat_id
+        # Извлекаем обязательные поля с проверкой
+        secret = form.get("secret")
+        chat_id = form.get("chat_id")
+        message_text = form.get("message_text")
+        publish_at_local = form.get("publish_at_local")
+        recurrence = form.get("recurrence")
+        
+        # Проверяем обязательные поля
+        missing_fields = []
+        if not chat_id:
+            missing_fields.append("chat_id")
+        if not message_text:
+            missing_fields.append("message_text")
+        if not publish_at_local:
+            missing_fields.append("publish_at_local")
+        if not recurrence:
+            missing_fields.append("recurrence")
+        
+        if missing_fields:
+            logger.error(f"❌ Отсутствуют обязательные поля: {', '.join(missing_fields)}")
+            raise ValueError(f"Отсутствуют обязательные поля: {', '.join(missing_fields)}")
+        
+        # Логируем полученные данные
+        logger.debug(f"✅ Получены обязательные поля: chat_id={chat_id}, message_text={message_text}, publish_at_local={publish_at_local}, recurrence={recurrence}")
+        
+        # Извлекаем необязательные поля
+        media_file_id = form.get("media_file_id")
+        delete_after_days = form.get("delete_after_days")
+        pin = form.get("pin")  # будет "on" если checkbox отмечен
+        notify = form.get("notify")  # будет "on" если checkbox отмечен
+        
+        logger.debug(f"📝 Необязательные поля: media_file_id={media_file_id}, delete_after_days={delete_after_days}, pin={pin}, notify={notify}")
+        
+        # Парсим дату
         try:
-            chat_id_clean = chat_id.strip()
-            if not chat_id_clean.startswith('-100'):
-                raise ValueError('Invalid chat ID format. Must start with -100')
-            chat_id_int = int(chat_id_clean)
-            logger.debug(f"✅ chat_id успешно сконвертирован: {chat_id_int}")
-        except (ValueError, TypeError) as e:
-            logger.error(f"❌ Ошибка валидации chat_id: {e}")
-            raise ValueError(f"Неверный формат chat_id: {e}")
-
-        # 2. Валидация и парсинг даты
-        try:
-            publish_clean = publish_at_local.strip()
-            naive_local, utc_naive = parse_user_datetime(publish_clean)
+            naive_local, utc_naive = parse_user_datetime(publish_at_local.strip())
             publish_at_utc = utc_naive.isoformat()
-            logger.debug(f"✅ Дата успешно распарсена: {publish_at_utc}")
+            logger.debug(f"⏰ Распарсенная дата: {publish_at_utc}")
         except (ValueError, TypeError) as e:
-            logger.error(f"❌ Ошибка парсинга даты: {e}")
+            logger.warning(f"⚠️ Ошибка парсинга даты: {e}")
             raise ValueError(f"Неверный формат даты: {e}")
 
-        # 3. Определение типа медиа
+        # Определяем тип медиа
         media_type = detect_media_type(media_file_id.strip()) if media_file_id and media_file_id.strip() else None
         photo_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "photo" else None
         document_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "document" else None
         logger.debug(f"🖼️ Тип медиа: {media_type}, photo_file_id={photo_file_id}, document_file_id={document_file_id}")
 
-        # 4. Конвертация булевых значений
+        # Конвертируем булевы значения
         pin_bool = pin == "on"
         notify_bool = notify == "on"
         logger.debug(f"✅ Конвертировано: pin={pin_bool}, notify={notify_bool}")
 
-        # 5. Конвертация delete_after_days
+        # Конвертируем delete_after_days
         delete_after_days_int = None
         if delete_after_days and delete_after_days.strip():
             try:
@@ -527,9 +545,9 @@ async def admin_create_task(
         
         logger.debug(f"✅ delete_after_days: {delete_after_days_int}")
 
-        # 6. Подготовка данных
+        # Подготовка данных
         data = {
-            'chat_id': chat_id_int,
+            'chat_id': int(chat_id.strip()),
             'text': message_text.strip() if not (photo_file_id or document_file_id) else None,
             'photo_file_id': photo_file_id,
             'document_file_id': document_file_id,
@@ -542,27 +560,27 @@ async def admin_create_task(
         }
         logger.debug(f"💾 Данные для сохранения: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
-        # 7. Добавление задачи в БД
+        # Добавляем задачу
         try:
             msg_id = add_scheduled_message(data)
             TASKS_CREATED.inc()
-            logger.info(f"✅ Задача успешно создана: ID={msg_id}, chat_id={chat_id_int}")
+            logger.info(f"✅ Задача создана через админку: ID={msg_id}")
         except Exception as e:
             logger.error(f"❌ Ошибка добавления задачи в БД: {e}")
             raise
 
-        # 8. Перенаправление с секретом
-        redirect_url = f"/admin?secret={quote(secret)}" if secret else "/admin"
+        # Перенаправляем на админку с секретом
+        redirect_url = f"/admin?secret={quote(str(secret))}" if secret else "/admin"
         logger.info(f"🔄 Редирект на: {redirect_url}")
         return RedirectResponse(url=redirect_url, status_code=303)
 
     except ValueError as e:
-        logger.warning(f"⚠️ Ошибка валидации при создании задачи: {e}")
-        redirect_url = f"/admin?secret={quote(secret)}&error={quote(str(e))}" if secret else f"/admin?error={quote(str(e))}"
+        logger.warning(f"⚠️ Ошибка создания задачи: {e}")
+        redirect_url = f"/admin?secret={quote(str(secret))}&error={quote(str(e))}" if secret else f"/admin?error={quote(str(e))}"
         return RedirectResponse(url=redirect_url, status_code=303)
     except Exception as e:
         logger.exception(f"❌ Неожиданная ошибка при создании задачи: {e}")
-        redirect_url = f"/admin?secret={quote(secret)}&error=internal_error" if secret else "/admin?error=internal_error"
+        redirect_url = f"/admin?secret={quote(str(secret))}&error=internal_error" if secret else "/admin?error=internal_error"
         return RedirectResponse(url=redirect_url, status_code=303)
 
 @app.get("/admin/edit/{task_id}", response_class=HTMLResponse, summary="Edit task form")
@@ -656,52 +674,61 @@ async def admin_edit_form(
 @app.post("/admin/edit/{task_id}", summary="Save edited task")
 async def admin_save_edit(
     task_id: int,
-    secret: Optional[str] = Form(None),
-    chat_id: str = Form(...),  # str вместо int
-    message_text: str = Form(...),
-    media_file_id: Optional[str] = Form(None),
-    publish_at_local: str = Form(...),
-    recurrence: str = Form(...),
-    delete_after_days: Optional[str] = Form(None),  # str вместо int
-    pin: Optional[str] = Form("off"),  # checkbox "on"/"off"
-    notify: Optional[str] = Form("on")  # checkbox "on"/"off"
+    request: Request
 ):
     """Сохраняет отредактированную задачу."""
     logger.info(f"💾 Сохранение задачи {task_id}")
     
     try:
-        # Детальное логирование
-        logger.debug(f"📝 Получены параметры для редактирования задачи {task_id}")
+        # Получаем данные формы
+        form = await request.form()
         
-        # Конвертация chat_id
+        # Извлекаем обязательные поля
+        secret = form.get("secret")
+        chat_id = form.get("chat_id")
+        message_text = form.get("message_text")
+        publish_at_local = form.get("publish_at_local")
+        recurrence = form.get("recurrence")
+        
+        # Проверяем обязательные поля
+        missing_fields = []
+        if not chat_id:
+            missing_fields.append("chat_id")
+        if not message_text:
+            missing_fields.append("message_text")
+        if not publish_at_local:
+            missing_fields.append("publish_at_local")
+        if not recurrence:
+            missing_fields.append("recurrence")
+        
+        if missing_fields:
+            logger.error(f"❌ Отсутствуют обязательные поля: {', '.join(missing_fields)}")
+            raise ValueError(f"Отсутствуют обязательные поля: {', '.join(missing_fields)}")
+        
+        # Извлекаем необязательные поля
+        media_file_id = form.get("media_file_id")
+        delete_after_days = form.get("delete_after_days")
+        pin = form.get("pin")
+        notify = form.get("notify")
+        
+        # Парсим дату
         try:
-            chat_id_clean = chat_id.strip()
-            if not chat_id_clean.startswith('-100'):
-                raise ValueError('Invalid chat ID format. Must start with -100')
-            chat_id_int = int(chat_id_clean)
-        except (ValueError, TypeError) as e:
-            logger.error(f"❌ Ошибка валидации chat_id: {e}")
-            raise ValueError(f"Неверный формат chat_id: {e}")
-
-        # Парсинг даты
-        try:
-            publish_clean = publish_at_local.strip()
-            naive_local, utc_naive = parse_user_datetime(publish_clean)
+            naive_local, utc_naive = parse_user_datetime(publish_at_local.strip())
             publish_at_utc = utc_naive.isoformat()
         except (ValueError, TypeError) as e:
             logger.warning(f"⚠️ Ошибка парсинга даты: {e}")
             raise ValueError(f"Неверный формат даты: {e}")
 
-        # Определение типа медиа
+        # Определяем тип медиа
         media_type = detect_media_type(media_file_id.strip()) if media_file_id and media_file_id.strip() else None
         photo_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "photo" else None
         document_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "document" else None
 
-        # Конвертация булевых значений
+        # Конвертируем булевы значения
         pin_bool = pin == "on"
         notify_bool = notify == "on"
 
-        # Конвертация delete_after_days
+        # Конвертируем delete_after_days
         delete_after_days_int = None
         if delete_after_days and delete_after_days.strip():
             try:
@@ -714,7 +741,7 @@ async def admin_save_edit(
         # Обновляем задачу
         success = update_scheduled_message(
             msg_id=task_id,
-            chat_id=chat_id_int,
+            chat_id=int(chat_id.strip()),
             text=message_text.strip() if not (photo_file_id or document_file_id) else None,
             photo_file_id=photo_file_id,
             document_file_id=document_file_id,
@@ -733,29 +760,33 @@ async def admin_save_edit(
         logger.info(f"✅ Задача {task_id} обновлена через админку")
         
         # Перенаправляем на админку с секретом
-        redirect_url = f"/admin?secret={quote(secret)}" if secret else "/admin"
+        redirect_url = f"/admin?secret={quote(str(secret))}" if secret else "/admin"
         return RedirectResponse(url=redirect_url, status_code=303)
 
     except ValueError as e:
         logger.warning(f"⚠️ Ошибка обновления задачи {task_id}: {e}")
-        redirect_url = f"/admin/edit/{task_id}?secret={quote(secret)}&error={quote(str(e))}" if secret else f"/admin/edit/{task_id}?error={quote(str(e))}"
+        redirect_url = f"/admin/edit/{task_id}?secret={quote(str(secret))}&error={quote(str(e))}" if secret else f"/admin/edit/{task_id}?error={quote(str(e))}"
         return RedirectResponse(url=redirect_url, status_code=303)
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"❌ Ошибка при сохранении задачи {task_id}: {e}")
-        redirect_url = f"/admin/edit/{task_id}?secret={quote(secret)}&error=internal_error" if secret else f"/admin/edit/{task_id}?error=internal_error"
+        redirect_url = f"/admin/edit/{task_id}?secret={quote(str(secret))}&error=internal_error" if secret else f"/admin/edit/{task_id}?error=internal_error"
         return RedirectResponse(url=redirect_url, status_code=303)
 
 @app.post("/admin/delete/{task_id}", summary="Delete task")
 async def admin_delete_task(
     task_id: int,
-    secret: Optional[str] = Form(None)
+    request: Request
 ):
     """Удаляет задачу."""
     logger.info(f"🗑️ Удаление задачи {task_id}")
     
     try:
+        # Получаем данные формы
+        form = await request.form()
+        secret = form.get("secret")
+        
         success = deactivate_message(task_id)
         if not success:
             logger.warning(f"⚠️ Задача {task_id} не найдена для удаления")
@@ -765,7 +796,7 @@ async def admin_delete_task(
         logger.info(f"✅ Задача {task_id} удалена через админку")
         
         # Перенаправляем на админку с секретом
-        redirect_url = f"/admin?secret={quote(secret)}" if secret else "/admin"
+        redirect_url = f"/admin?secret={quote(str(secret))}" if secret else "/admin"
         return RedirectResponse(url=redirect_url, status_code=303)
     
     except HTTPException:
