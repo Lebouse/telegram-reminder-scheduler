@@ -1,5 +1,5 @@
 # web_api.py
-# ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ с УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ и ОБРАБОТКОЙ ОШИБОК
+# ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ с исправлением всех проблем
 # Порт: 8081
 # Секрет админки: qwerty12345
 
@@ -12,10 +12,10 @@ import os
 import hmac
 import hashlib
 import json
-from typing import Optional, List, Dict, Any, Union, Tuple
+from typing import Optional, List, Dict, Any, Union
 from urllib.parse import quote, urlparse, urlunparse, parse_qs
 
-from fastapi import FastAPI, HTTPException, Header, Request, Form, status, Query, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, Request, Form, status, Query, Depends
 from fastapi.responses import JSONResponse, Response, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +33,7 @@ from shared.database import (
 )
 from shared.utils import (
     escape_markdown_v2, detect_media_type,
-    parse_user_datetime, next_recurrence_time
+    parse_user_datetime
 )
 from scheduler_logic import publish_message
 from shared.bot_instance import get_bot
@@ -56,7 +56,7 @@ app = FastAPI(
 # === CORS настройки (для безопасности) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # В продакшене замените на конкретные домены
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -96,7 +96,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             }
         )
     
-    # Для HTML-запросов возвращаем HTML с деталями ошибки (только для админов)
+    # Для HTML-запросов возвращаем HTML с деталями ошибки
     error_details = f"""
     <h1>❌ Internal Server Error</h1>
     <p><strong>Endpoint:</strong> {request.url.path}</p>
@@ -254,7 +254,6 @@ async def get_chat_title_cached(chat_id: int) -> str:
 def safe_dict(row) -> dict:
     """
     Безопасно конвертирует sqlite3.Row или словарь в стандартный словарь.
-    Решает проблему с Internal Server Error при работе с результатами БД.
     """
     try:
         if hasattr(row, 'keys'):  # Это sqlite3.Row или подобный объект
@@ -365,8 +364,7 @@ async def admin_panel(
     chat_filter: Optional[str] = None,
     secret: Optional[str] = None,
     create: Optional[str] = None,
-    error: Optional[str] = None,
-    background_tasks: BackgroundTasks = None
+    error: Optional[str] = None
 ):
     """
     Отображает админку для управления задачами.
@@ -457,71 +455,109 @@ async def admin_panel(
 @app.post("/admin/create", summary="Create new task")
 async def admin_create_task(
     request: Request,
-    background_tasks: BackgroundTasks,
     secret: Optional[str] = Form(None),
-    chat_id: int = Form(...),
+    chat_id: str = Form(...),  # Используем str вместо int для надежности
     message_text: str = Form(...),
     media_file_id: Optional[str] = Form(None),
     publish_at_local: str = Form(...),
     recurrence: str = Form(...),
-    weekly_days: Optional[List[int]] = Form(None),
-    monthly_days: Optional[str] = Form(None),
-    delete_after_days: Optional[int] = Form(None),
-    pin: bool = Form(False),
-    notify: bool = Form(True)
+    delete_after_days: Optional[str] = Form(None),  # str вместо int
+    pin: Optional[str] = Form("off"),  # checkbox возвращает "on" или отсутствует
+    notify: Optional[str] = Form("on")  # checkbox возвращает "on" или отсутствует
 ):
     """Создаёт новую задачу из админки."""
     logger.info("✅ Начало создания задачи")
     
     try:
-        logger.debug(f"📝 Получены параметры: chat_id={chat_id}, message_text={message_text}, publish_at_local={publish_at_local}, recurrence={recurrence}")
+        # Детальное логирование всех параметров
+        logger.debug(f"📝 Получены параметры формы:")
+        form_data = await request.form()
+        logger.debug(f"Полные данные формы: {dict(form_data)}")
         
-        # Парсим дату
+        logger.debug(f"chat_id (raw): '{chat_id}'")
+        logger.debug(f"message_text (raw): '{message_text}'")
+        logger.debug(f"publish_at_local (raw): '{publish_at_local}'")
+        logger.debug(f"recurrence (raw): '{recurrence}'")
+        logger.debug(f"pin (raw): '{pin}'")
+        logger.debug(f"notify (raw): '{notify}'")
+        
+        # 1. Валидация и конвертация chat_id
         try:
-            naive_local, utc_naive = parse_user_datetime(publish_at_local)
-            publish_at_utc = utc_naive.isoformat()
-            logger.debug(f"⏰ Распарсенная дата: {publish_at_utc}")
+            chat_id_clean = chat_id.strip()
+            if not chat_id_clean.startswith('-100'):
+                raise ValueError('Invalid chat ID format. Must start with -100')
+            chat_id_int = int(chat_id_clean)
+            logger.debug(f"✅ chat_id успешно сконвертирован: {chat_id_int}")
         except (ValueError, TypeError) as e:
-            logger.warning(f"⚠️ Ошибка парсинга даты: {e}")
+            logger.error(f"❌ Ошибка валидации chat_id: {e}")
+            raise ValueError(f"Неверный формат chat_id: {e}")
+
+        # 2. Валидация и парсинг даты
+        try:
+            publish_clean = publish_at_local.strip()
+            naive_local, utc_naive = parse_user_datetime(publish_clean)
+            publish_at_utc = utc_naive.isoformat()
+            logger.debug(f"✅ Дата успешно распарсена: {publish_at_utc}")
+        except (ValueError, TypeError) as e:
+            logger.error(f"❌ Ошибка парсинга даты: {e}")
             raise ValueError(f"Неверный формат даты: {e}")
 
-        # Определяем тип медиа
-        media_type = detect_media_type(media_file_id) if media_file_id else None
-        photo_file_id = media_file_id if media_type == "photo" else None
-        document_file_id = media_file_id if media_type == "document" else None
+        # 3. Определение типа медиа
+        media_type = detect_media_type(media_file_id.strip()) if media_file_id and media_file_id.strip() else None
+        photo_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "photo" else None
+        document_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "document" else None
         logger.debug(f"🖼️ Тип медиа: {media_type}, photo_file_id={photo_file_id}, document_file_id={document_file_id}")
 
-        # Подготовка данных
+        # 4. Конвертация булевых значений
+        pin_bool = pin == "on"
+        notify_bool = notify == "on"
+        logger.debug(f"✅ Конвертировано: pin={pin_bool}, notify={notify_bool}")
+
+        # 5. Конвертация delete_after_days
+        delete_after_days_int = None
+        if delete_after_days and delete_after_days.strip():
+            try:
+                days = int(delete_after_days.strip())
+                if days in (1, 2, 3):
+                    delete_after_days_int = days
+                else:
+                    raise ValueError('Must be 1, 2, or 3 days')
+            except (ValueError, TypeError) as e:
+                logger.warning(f"⚠️ Неверное значение delete_after_days: {e}")
+        
+        logger.debug(f"✅ delete_after_days: {delete_after_days_int}")
+
+        # 6. Подготовка данных
         data = {
-            'chat_id': chat_id,
-            'text': message_text if not (photo_file_id or document_file_id) else None,
+            'chat_id': chat_id_int,
+            'text': message_text.strip() if not (photo_file_id or document_file_id) else None,
             'photo_file_id': photo_file_id,
             'document_file_id': document_file_id,
-            'caption': message_text if (photo_file_id or document_file_id) else None,
+            'caption': message_text.strip() if (photo_file_id or document_file_id) else None,
             'publish_at': publish_at_utc,
-            'recurrence': recurrence,
-            'pin': pin,
-            'notify': notify,
-            'delete_after_days': delete_after_days
+            'recurrence': recurrence.strip(),
+            'pin': pin_bool,
+            'notify': notify_bool,
+            'delete_after_days': delete_after_days_int
         }
-        logger.debug(f"💾 Данные для сохранения: {json.dumps(data, indent=2)}")
+        logger.debug(f"💾 Данные для сохранения: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
-        # Добавляем задачу
+        # 7. Добавление задачи в БД
         try:
             msg_id = add_scheduled_message(data)
             TASKS_CREATED.inc()
-            logger.info(f"✅ Задача создана через админку: ID={msg_id}")
+            logger.info(f"✅ Задача успешно создана: ID={msg_id}, chat_id={chat_id_int}")
         except Exception as e:
             logger.error(f"❌ Ошибка добавления задачи в БД: {e}")
             raise
 
-        # Перенаправляем на админку с секретом
+        # 8. Перенаправление с секретом
         redirect_url = f"/admin?secret={quote(secret)}" if secret else "/admin"
         logger.info(f"🔄 Редирект на: {redirect_url}")
         return RedirectResponse(url=redirect_url, status_code=303)
 
     except ValueError as e:
-        logger.warning(f"⚠️ Ошибка создания задачи: {e}")
+        logger.warning(f"⚠️ Ошибка валидации при создании задачи: {e}")
         redirect_url = f"/admin?secret={quote(secret)}&error={quote(str(e))}" if secret else f"/admin?error={quote(str(e))}"
         return RedirectResponse(url=redirect_url, status_code=303)
     except Exception as e:
@@ -620,45 +656,74 @@ async def admin_edit_form(
 @app.post("/admin/edit/{task_id}", summary="Save edited task")
 async def admin_save_edit(
     task_id: int,
-    background_tasks: BackgroundTasks,
     secret: Optional[str] = Form(None),
-    chat_id: int = Form(...),
+    chat_id: str = Form(...),  # str вместо int
     message_text: str = Form(...),
     media_file_id: Optional[str] = Form(None),
     publish_at_local: str = Form(...),
     recurrence: str = Form(...),
-    weekly_days: Optional[List[int]] = Form(None),
-    monthly_days: Optional[str] = Form(None),
-    delete_after_days: Optional[int] = Form(None),
-    pin: bool = Form(False),
-    notify: bool = Form(True)
+    delete_after_days: Optional[str] = Form(None),  # str вместо int
+    pin: Optional[str] = Form("off"),  # checkbox "on"/"off"
+    notify: Optional[str] = Form("on")  # checkbox "on"/"off"
 ):
     """Сохраняет отредактированную задачу."""
     logger.info(f"💾 Сохранение задачи {task_id}")
     
     try:
-        # Парсим дату
-        naive_local, utc_naive = parse_user_datetime(publish_at_local)
-        publish_at_utc = utc_naive.isoformat()
+        # Детальное логирование
+        logger.debug(f"📝 Получены параметры для редактирования задачи {task_id}")
+        
+        # Конвертация chat_id
+        try:
+            chat_id_clean = chat_id.strip()
+            if not chat_id_clean.startswith('-100'):
+                raise ValueError('Invalid chat ID format. Must start with -100')
+            chat_id_int = int(chat_id_clean)
+        except (ValueError, TypeError) as e:
+            logger.error(f"❌ Ошибка валидации chat_id: {e}")
+            raise ValueError(f"Неверный формат chat_id: {e}")
 
-        # Определяем тип медиа
-        media_type = detect_media_type(media_file_id) if media_file_id else None
-        photo_file_id = media_file_id if media_type == "photo" else None
-        document_file_id = media_file_id if media_type == "document" else None
+        # Парсинг даты
+        try:
+            publish_clean = publish_at_local.strip()
+            naive_local, utc_naive = parse_user_datetime(publish_clean)
+            publish_at_utc = utc_naive.isoformat()
+        except (ValueError, TypeError) as e:
+            logger.warning(f"⚠️ Ошибка парсинга даты: {e}")
+            raise ValueError(f"Неверный формат даты: {e}")
+
+        # Определение типа медиа
+        media_type = detect_media_type(media_file_id.strip()) if media_file_id and media_file_id.strip() else None
+        photo_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "photo" else None
+        document_file_id = media_file_id.strip() if media_file_id and media_file_id.strip() and media_type == "document" else None
+
+        # Конвертация булевых значений
+        pin_bool = pin == "on"
+        notify_bool = notify == "on"
+
+        # Конвертация delete_after_days
+        delete_after_days_int = None
+        if delete_after_days and delete_after_days.strip():
+            try:
+                days = int(delete_after_days.strip())
+                if days in (1, 2, 3):
+                    delete_after_days_int = days
+            except (ValueError, TypeError):
+                pass
 
         # Обновляем задачу
         success = update_scheduled_message(
             msg_id=task_id,
-            chat_id=chat_id,
-            text=message_text if not (photo_file_id or document_file_id) else None,
+            chat_id=chat_id_int,
+            text=message_text.strip() if not (photo_file_id or document_file_id) else None,
             photo_file_id=photo_file_id,
             document_file_id=document_file_id,
-            caption=message_text if (photo_file_id or document_file_id) else None,
+            caption=message_text.strip() if (photo_file_id or document_file_id) else None,
             publish_at=publish_at_utc,
-            recurrence=recurrence,
-            pin=pin,
-            notify=notify,
-            delete_after_days=delete_after_days
+            recurrence=recurrence.strip(),
+            pin=pin_bool,
+            notify=notify_bool,
+            delete_after_days=delete_after_days_int
         )
         
         if not success:
