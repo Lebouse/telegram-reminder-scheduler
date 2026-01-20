@@ -198,9 +198,14 @@
                     <select name="chat_filter" onchange="this.form.submit()">
                         <option value="">Все чаты ({{ active_count }})</option>
                         {% for chat_id in unique_chats %}
-                            <option value="{{ chat_id }}" {% if chat_filter == chat_id|string %}selected{% endif %}>
-                                {{ chat_titles.get(chat_id, "Чат " + chat_id|string) }}
-                                {% set chat_tasks = tasks | selectattr('chat_id', 'equalto', chat_id) | list %}
+                            <option value="{{ chat_id }}" {% if chat_filter and chat_filter == chat_id|string %}selected{% endif %}>
+                                {{ chat_titles.get(chat_id|string, "Чат " + chat_id|string) }}
+                                {% set chat_tasks = [] %}
+                                {% for task in tasks %}
+                                    {% if task.chat_id == chat_id %}
+                                        {% set _ = chat_tasks.append(task) %}
+                                    {% endif %}
+                                {% endfor %}
                                 ({{ chat_tasks | length }})
                             </option>
                         {% endfor %}
@@ -219,24 +224,24 @@
         {% if edit_task or show_create_form %}
         <div class="form-section">
             <h2>{% if edit_task and edit_task.id %}Редактирование напоминания #{{ edit_task.id }}{% else %}Создать новое напоминание{% endif %}</h2>
-            <form method="post" action="{% if edit_task and edit_task.id %}/admin/edit/{{ edit_task.id }}{% else %}/admin/create{% endif %}">
+            <form method="post" action="{% if edit_task and edit_task.id %}/admin/edit/{{ edit_task.id }}{% else %}/admin/create{% endif %}" id="task-form">
                 <input type="hidden" name="secret" value="{{ current_secret }}">
 
                 <div class="form-group">
                     <label>Чат ID:</label>
-                    <input type="text" name="chat_id" value="{{ edit_task.chat_id if edit_task else '' }}" required pattern="-100\d+">
+                    <input type="text" name="chat_id" value="{{ edit_task.chat_id if edit_task else '' }}" required pattern="-100\d+" placeholder="-1001234567890">
                     <small>Пример: -1001234567890</small>
                 </div>
 
                 <div class="form-group">
                     <label>Сообщение:</label>
-                    <textarea name="message_text" required>{{ edit_task.message_text if edit_task else '' }}</textarea>
+                    <textarea name="message_text" required placeholder="Введите текст сообщения...">{{ edit_task.message_text if edit_task else '' }}</textarea>
                     <small>Поддерживается форматирование: *жирный*, _курсив_, `код`. Можно использовать эмодзи 😊</small>
                 </div>
 
                 <div class="form-group">
                     <label>Media file_id (опционально):</label>
-                    <input type="text" name="media_file_id" value="{{ edit_task.media_file_id if edit_task else '' }}">
+                    <input type="text" name="media_file_id" value="{{ edit_task.media_file_id if edit_task else '' }}" placeholder="file_id фото или документа">
                     <small>Отправьте фото/PDF боту → скопируйте file_id из ответа</small>
                 </div>
 
@@ -249,7 +254,7 @@
                 <div class="form-group">
                     <label>Повторять напоминание:</label>
                     <div class="radio-group">
-                        <label><input type="radio" name="recurrence" value="once" {% if edit_task and edit_task.recurrence == 'once' %}checked{% elif not edit_task %}checked{% endif %}> Один раз</label>
+                        <label><input type="radio" name="recurrence" value="once" {% if edit_task and edit_task.recurrence == 'once' %}checked{% elif not edit_task %}checked{% endif %} required> Один раз</label>
                         <label><input type="radio" name="recurrence" value="daily" {% if edit_task and edit_task.recurrence == 'daily' %}checked{% endif %}> Ежедневно</label>
                         <label><input type="radio" name="recurrence" value="weekly" {% if edit_task and edit_task.recurrence == 'weekly' %}checked{% endif %}> Еженедельно</label>
                         <label><input type="radio" name="recurrence" value="monthly" {% if edit_task and edit_task.recurrence == 'monthly' %}checked{% endif %}> Ежемесячно</label>
@@ -313,7 +318,7 @@
                 {% for task in tasks %}
                     <tr>
                         <td>{{ task.id }}</td>
-                        <td>{{ chat_titles.get(task.chat_id|string, task.chat_id) }}</td>
+                        <td>{{ chat_titles.get(task.chat_id|string, task.chat_id|string) }}</td>
                         <td>
                             {% if task.photo_file_id %}
                                 <span class="media-indicator">🖼️ Фото</span>
@@ -375,6 +380,25 @@
                     form.appendChild(secretInput);
                 }
             });
+        });
+
+        // Валидация даты перед отправкой формы
+        document.addEventListener('DOMContentLoaded', () => {
+            const form = document.getElementById('task-form');
+            if (form) {
+                form.addEventListener('submit', function(e) {
+                    const dateInput = this.querySelector('input[name="publish_at_local"]');
+                    if (dateInput && dateInput.value) {
+                        const datePattern = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
+                        if (!datePattern.test(dateInput.value)) {
+                            e.preventDefault();
+                            alert('Неверный формат даты. Используйте формат: ДД.ММ.ГГГГ ЧЧ:ММ');
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+            }
         });
     </script>
 </body>
