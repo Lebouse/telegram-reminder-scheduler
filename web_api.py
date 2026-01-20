@@ -1,14 +1,19 @@
 # web_api.py
+# Полностью рабочая версия для v0.1.0-pre
+# Сервер: 178.255.127.155
+# Порт: 8081
+# Секрет админки: qwerty12345
 
 import asyncio
 import datetime
 import csv
 import io
 import logging
+import os
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Header, Request, Form, status
+from fastapi import FastAPI, HTTPException, Header, Request, Form, status, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, validator
@@ -21,7 +26,7 @@ from shared.database import (
 )
 from shared.utils import (
     escape_markdown_v2, detect_media_type,
-    parse_user_datetime, next_recurrence_time
+    parse_user_datetime
 )
 from scheduler_logic import publish_message
 
@@ -42,7 +47,6 @@ TASKS_DELETED = Counter('telegram_scheduler_tasks_deleted_total', 'Total tasks d
 ACTIVE_TASKS = Gauge('telegram_scheduler_active_tasks', 'Number of active scheduled tasks')
 
 # === Шаблоны ===
-import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
@@ -66,34 +70,10 @@ class PublishRequest(BaseModel):
             raise ValueError('Must be 1, 2, or 3')
         return v
 
-class TaskCreateForm(BaseModel):
-    chat_id: int
-    message_text: str
-    media_file_id: Optional[str] = None
-    publish_at_local: str  # ДД.ММ.ГГГГ ЧЧ:ММ
-    recurrence: str
-    weekly_days: Optional[List[int]] = None
-    monthly_days: Optional[str] = None
-    delete_after_days: Optional[int] = None
-    pin: bool = False
-    notify: bool = True
-
-    @validator('chat_id')
-    def validate_chat_id(cls, v):
-        if not str(v).startswith('-100'):
-            raise ValueError('Invalid chat ID format')
-        return v
-
-    @validator('delete_after_days')
-    def validate_delete_days_form(cls, v):
-        if v is not None and v not in (1, 2, 3):
-            raise ValueError('Must be 1, 2, or 3')
-        return v
-
 # === Вспомогательные функции ===
 async def get_chat_title(chat_id: int) -> str:
     """Получает название чата через Telegram API с кэшированием."""
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     if chat_id in CHAT_TITLE_CACHE:
         title, timestamp = CHAT_TITLE_CACHE[chat_id]
         if (now - timestamp).total_seconds() < 3600:  # кэш 1 час
@@ -110,15 +90,6 @@ async def get_chat_title(chat_id: int) -> str:
 
     CHAT_TITLE_CACHE[chat_id] = (title, now)
     return title
-
-def parse_weekly_days(days_str: Optional[str]) -> List[int]:
-    """Парсит строку дней недели (например, '0,2,4')."""
-    if not days_str:
-        return []
-    try:
-        return [int(d.strip()) for d in days_str.split(',') if d.strip().isdigit()]
-    except:
-        return []
 
 # === Эндпоинты ===
 
@@ -179,11 +150,36 @@ async def web_publish(request: PublishRequest, x_secret: str = Header(...)):
 async def admin_panel(
     request: Request,
     chat_filter: Optional[str] = None,
-    x_admin_secret: str = Header(None)
+    secret: Optional[str] = Query(None),  # Явно указываем Query параметр
+    x_admin_secret: str = Header(None, alias="X-Admin-Secret")
 ):
-    """Отображает админку для управления задачами."""
-    if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
+    """
+    Отображает админку для управления задачами.
+    Поддерживает секрет как из заголовка, так и из URL параметра.
+    """
+    # ДЕТАЛЬНАЯ ОТЛАДКА (временно для настройки)
+    logger.info("=" * 60)
+    logger.info(f"📥 ЗАПРОС К /admin")
+    logger.info(f"Полный URL: {request.url}")
+    logger.info(f"Параметры URL: {dict(request.query_params)}")
+    logger.info(f"Заголовки запроса: {dict(request.headers)}")
+    logger.info(f"ADMIN_SECRET из конфига: '{ADMIN_SECRET}'")
+    logger.info(f"secret из URL: '{secret}'")
+    logger.info(f"X-Admin-Secret из заголовка: '{x_admin_secret}'")
+
+    # Комбинируем источники секрета
+    actual_secret = x_admin_secret or secret or request.query_params.get("secret")
+    
+    logger.info(f"🔍 Итоговый секрет для проверки: '{actual_secret}'")
+
+    # Проверка доступа
+    if ADMIN_SECRET and str(actual_secret) != str(ADMIN_SECRET):
+        logger.error("❌ ДОСТУП ЗАПРЕЩЁН! Секреты не совпадают")
+        logger.error(f"Ожидалось: '{ADMIN_SECRET}'")
+        logger.error(f"Получено: '{actual_secret}'")
         raise HTTPException(status_code=403, detail="Admin access required")
+    
+    logger.info("✅ ДОСТУП РАЗРЕШЁН!")
 
     tasks = get_all_active_messages()
 
@@ -226,185 +222,12 @@ async def admin_panel(
         "timezone": str(TIMEZONE)
     })
 
-@app.post("/admin/create", summary="Create new task")
-async def admin_create_task(
-    request: Request,
-    chat_id: int = Form(...),
-    message_text: str = Form(...),
-    media_file_id: Optional[str] = Form(None),
-    publish_at_local: str = Form(...),
-    recurrence: str = Form(...),
-    weekly_days: Optional[List[int]] = Form(None),
-    monthly_days: Optional[str] = Form(None),
-    delete_after_days: Optional[int] = Form(None),
-    pin: bool = Form(False),
-    notify: bool = Form(True),
-    x_admin_secret: str = Header(None)
-):
-    """Создаёт новую задачу из админки."""
-    if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
-
-    try:
-        # Парсим дату
-        naive_local, utc_naive = parse_user_datetime(publish_at_local)
-        publish_at_utc = utc_naive.isoformat()
-
-        # Определяем тип медиа
-        media_type = detect_media_type(media_file_id) if media_file_id else None
-        photo_file_id = media_file_id if media_type == "photo" else None
-        document_file_id = media_file_id if media_type == "document" else None
-
-        # Подготовка данных
-        data = {
-            'chat_id': chat_id,
-            'text': message_text if not (photo_file_id or document_file_id) else None,
-            'photo_file_id': photo_file_id,
-            'document_file_id': document_file_id,
-            'caption': message_text if (photo_file_id or document_file_id) else None,
-            'publish_at': publish_at_utc,
-            'recurrence': recurrence,
-            'pin': pin,
-            'notify': notify,
-            'delete_after_days': delete_after_days
-        }
-
-        msg_id = add_scheduled_message(data)
-        TASKS_CREATED.inc()
-        logger.info(f"Задача создана через админку: ID={msg_id}")
-        return RedirectResponse(url="/admin", status_code=303)
-
-    except ValueError as e:
-        logger.warning(f"Ошибка создания задачи: {e}")
-        return RedirectResponse(url=f"/admin?error={quote(str(e))}", status_code=303)
-    except Exception as e:
-        logger.exception("Неожиданная ошибка при создании задачи")
-        return RedirectResponse(url="/admin?error=internal_error", status_code=303)
-
-@app.get("/admin/edit/{task_id}", summary="Edit task form")
-async def admin_edit_form(
-    request: Request,
-    task_id: int,
-    x_admin_secret: str = Header(None)
-):
-    """Отображает форму редактирования задачи."""
-    if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
-
-    row = get_all_active_messages()
-    task_row = None
-    for r in row:
-        if r[0] == task_id:
-            task_row = r
-            break
-
-    if not task_row:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-
-    task = {
-        'id': task_row[0],
-        'chat_id': task_row[1],
-        'message_text': task_row[2] or task_row[5] or "",
-        'media_file_id': task_row[3] or task_row[4],
-        'publish_at_local': "",  # Будет заполнено ниже
-        'recurrence': task_row[8],
-        'pin': bool(task_row[9]),
-        'notify': bool(task_row[10]),
-        'delete_after_days': task_row[11]
-    }
-
-    # Конвертируем UTC в локальное время для отображения
-    try:
-        utc_dt = datetime.datetime.fromisoformat(task_row[6])
-        local_dt = utc_dt.replace(tzinfo=datetime.timezone.utc).astimezone(TIMEZONE)
-        task['publish_at_local'] = local_dt.strftime("%d.%m.%Y %H:%M")
-    except:
-        task['publish_at_local'] = task_row[6]
-
-    # Загружаем все задачи для фильтра
-    tasks = get_all_active_messages()
-    unique_chats = sorted({t[1] for t in tasks})
-    chat_titles = {cid: await get_chat_title(cid) for cid in unique_chats}
-
-    task_dicts = []
-    for r in tasks:
-        task_dicts.append({
-            'id': r[0],
-            'chat_id': r[1],
-            'text': r[2],
-            'photo_file_id': r[3],
-            'document_file_id': r[4],
-            'caption': r[5],
-            'publish_at': r[6],
-            'recurrence': r[8],
-            'pin': bool(r[9]),
-            'notify': bool(r[10]),
-            'delete_after_days': r[11],
-            'active': r[12]
-        })
-
-    return templates.TemplateResponse("admin.html", {
-        "request": request,
-        "tasks": task_dicts,
-        "active_count": len(tasks),
-        "unique_chats": unique_chats,
-        "chat_titles": chat_titles,
-        "edit_task": task,
-        "timezone": str(TIMEZONE)
-    })
-
-@app.post("/admin/edit/{task_id}", summary="Save edited task")
-async def admin_save_edit(
-    task_id: int,
-    chat_id: int = Form(...),
-    message_text: str = Form(...),
-    media_file_id: Optional[str] = Form(None),
-    publish_at_local: str = Form(...),
-    recurrence: str = Form(...),
-    weekly_days: Optional[List[int]] = Form(None),
-    monthly_days: Optional[str] = Form(None),
-    delete_after_days: Optional[int] = Form(None),
-    pin: bool = Form(False),
-    notify: bool = Form(True),
-    x_admin_secret: str = Header(None)
-):
-    """Сохраняет отредактированную задачу."""
-    if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
-
-    try:
-        naive_local, utc_naive = parse_user_datetime(publish_at_local)
-        publish_at_utc = utc_naive.isoformat()
-
-        media_type = detect_media_type(media_file_id) if media_file_id else None
-        photo_file_id = media_file_id if media_type == "photo" else None
-        document_file_id = media_file_id if media_type == "document" else None
-
-        update_scheduled_message(
-            msg_id=task_id,
-            chat_id=chat_id,
-            text=message_text if not (photo_file_id or document_file_id) else None,
-            photo_file_id=photo_file_id,
-            document_file_id=document_file_id,
-            caption=message_text if (photo_file_id or document_file_id) else None,
-            publish_at=publish_at_utc,
-            recurrence=recurrence,
-            pin=pin,
-            notify=notify,
-            delete_after_days=delete_after_days
-        )
-        logger.info(f"Задача {task_id} обновлена через админку")
-        return RedirectResponse(url="/admin", status_code=303)
-
-    except Exception as e:
-        logger.exception("Ошибка при сохранении задачи")
-        return RedirectResponse(url=f"/admin/edit/{task_id}?error={quote(str(e))}", status_code=303)
-
 @app.post("/admin/delete/{task_id}", summary="Delete task")
 async def admin_delete_task(task_id: int, x_admin_secret: str = Header(None)):
     """Удаляет задачу."""
     if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
+        logger.warning(f"Попытка удаления без прав: task_id={task_id}")
+        raise HTTPException(status_code=403, detail="Admin access required")
 
     deactivate_message(task_id)
     TASKS_DELETED.inc()
@@ -415,7 +238,7 @@ async def admin_delete_task(task_id: int, x_admin_secret: str = Header(None)):
 async def export_tasks_csv(x_admin_secret: str = Header(None)):
     """Экспортирует задачи в CSV."""
     if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
+        raise HTTPException(status_code=403, detail="Admin access required")
 
     tasks = get_all_active_messages()
     output = io.StringIO()
@@ -443,5 +266,7 @@ async def export_tasks_csv(x_admin_secret: str = Header(None)):
 # === Запуск сервера ===
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 8081))  # Используем порт из переменной окружения
+    logger.info(f"🚀 Запуск веб-API на порту {port}...")
+    logger.info(f"🔐 ADMIN_SECRET: '{ADMIN_SECRET}'")
     uvicorn.run(app, host="0.0.0.0", port=port)
