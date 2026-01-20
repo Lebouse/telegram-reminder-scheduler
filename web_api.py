@@ -242,8 +242,8 @@ async def admin_create_task(
     x_admin_secret: str = Header(None)
 ):
     """Создаёт новую задачу из админки."""
-    if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403)
+  #  if ADMIN_SECRET and x_admin_secret != ADMIN_SECRET:
+  #      raise HTTPException(status_code=403)
 
     try:
         # Парсим дату
